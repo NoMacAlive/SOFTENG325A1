@@ -34,6 +34,7 @@ public class Concert implements Comparable<Concert> {
     )
     @Column(name = "DATE")
     private Set<LocalDateTime> dates = new HashSet<>();
+
 //    @org.hibernate.annotations.Fetch(org.hibernate.annotations.FetchMode.SUBSELECT)
 //    @ManyToOne(cascade = {CascadeType.PERSIST, CascadeType.REMOVE})
     @ManyToMany(cascade = CascadeType.PERSIST)

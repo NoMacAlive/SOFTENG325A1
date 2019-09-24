@@ -59,7 +59,8 @@ public class ConcertResource {
     }
 
     /**
-     *
+     * create a new concert
+     *  not used in the test tho
      * @param concertDTO
      * @return
      */
@@ -240,9 +241,8 @@ public class ConcertResource {
             }
             GenericEntity<List<ConcertSummaryDTO>> genericConcerts = new GenericEntity<List<ConcertSummaryDTO>>(concertDTOS){};
             return Response.ok(genericConcerts).build();
-        }catch(Exception e){
-            e.printStackTrace();
-            return Response.serverError().build();
+        }catch(NoResultException e){
+            return Response.noContent().build();
         }finally {
             em.close();
         }
@@ -308,7 +308,6 @@ public class ConcertResource {
             List<Booking> bookings = qu.getResultList();
 
 
-
             for(Booking booking:bookings){
                 System.out.println(booking.getId());
                 bookingDTO.add(BookingMapper.toDTO(booking));
@@ -327,7 +326,7 @@ public class ConcertResource {
     /**
      * Create new booking
      * querying for seats are on optimistic lock mode to avoid concurrent modification
-     * successfull booking will be notified to those who subscibed to corresponding concerts and dates
+     * successful booking will be notified to those who subscribed to corresponding concerts and dates
      * @param u
      * @param uriInfo
      * @param token
@@ -339,10 +338,12 @@ public class ConcertResource {
         EntityManager em = PersistenceManager.instance().createEntityManager();
         URI uri = uriInfo.getAbsolutePath();
         Booking booking;
+
         try {
             if (token == null) {
                 return Response.status(Response.Status.UNAUTHORIZED).build();
             }
+            //after authentication
             em.getTransaction().begin();
             //get concert
             Concert concert = em.find(Concert.class,u.getConcertId());
@@ -359,7 +360,7 @@ public class ConcertResource {
             List<Seat> seats;
             List<Seat> seat = new ArrayList<>();
             TypedQuery<Seat> q = em.createQuery("select s from Seat s where s.label in :seatLabels and s.date = :date", Seat.class)
-                    .setLockMode(LockModeType.OPTIMISTIC_FORCE_INCREMENT)
+                    .setLockMode(LockModeType.OPTIMISTIC_FORCE_INCREMENT)//force increment version number on querying
                     .setParameter("seatLabels", u.getSeatLabels())
                     .setParameter("date", u.getDate());
 
@@ -383,7 +384,7 @@ public class ConcertResource {
             TypedQuery<User> que= em.createQuery("select u from User u where u.token = :tok",User.class).setParameter("tok",token.getValue());
             user = que.getSingleResult();
 
-            if(allSeatsAvailable) {
+            if(allSeatsAvailable) { //if all the seats that are to be booked are avaliable
                 for (Seat s : seat) {
                     em.merge(s);
                 }
@@ -406,11 +407,22 @@ public class ConcertResource {
         }finally {
             em.close();
         }
+        //publish the booking to all the subscribers
         publish(u.getConcertId(),u.getDate());
         return  Response.created(URI.create(uri+"/"+ booking.getId().toString())).build();
     }
 
 
+    /**
+     * Add new subscriber to a Set maintained by the server
+     * use the token in cookie to identify who the user was
+     * concertinfosubsciptiondto used to identify the concert and date to subscribe and it also contains the
+     * threshold where the subscriber will be notified about the change
+     * @param sub
+     * @param cookie
+     * @param u
+     * @return
+     */
     @POST
     @Path("subscribe/concertInfo")
     public Response subscribe(@Suspended AsyncResponse sub, @CookieParam("auth") Cookie cookie, ConcertInfoSubscriptionDTO u){
@@ -419,7 +431,7 @@ public class ConcertResource {
 
         try{
             em.getTransaction().begin();
-        //if unautherised
+        //if unauthorised
             if(cookie==null){
                 throw new WebApplicationException(Response.Status.UNAUTHORIZED);
             }else{
@@ -436,7 +448,7 @@ public class ConcertResource {
             }
 
             //otherwise...
-            synchronized (subs){
+            synchronized (subs){//make sure only one thread is adding subscribers
                 subs.add(new Subscriber(concertID,sub,date,u.getPercentageBooked()));
             }
 
@@ -453,12 +465,12 @@ public class ConcertResource {
         synchronized(subs){
             for(Subscriber sub:subs){
                 if(sub.getConcertId()==concertId) {
-                    long remainingSeatsPercentage = calculateForRemainingSeatsPercentage(concertId,date);
-                    if(remainingSeatsPercentage == -1){
+                    long remainingSeatsPercentage = calculateForRemainingSeatsPercentage(concertId,date);//calculate the percentage
+                    if(remainingSeatsPercentage == -1){                //no concert found or no date for that concert is found
                         break;
                     }
-                    if(remainingSeatsPercentage<=sub.getPercentage()) {
-                        sub.getSub().resume(new ConcertInfoNotificationDTO((int)(120 * (remainingSeatsPercentage)/100)));
+                    if(remainingSeatsPercentage<=sub.getPercentage()) { //if reached the threshold
+                        sub.getSub().resume(new ConcertInfoNotificationDTO((int)(120 * (remainingSeatsPercentage)/100)));//resume the asyncResponse
                     }
                 }
             }
@@ -466,6 +478,13 @@ public class ConcertResource {
         }
     }
 
+    /**
+     * Get all seats with the specified booking status
+     * use the LocalDateTimeParam to pass unsupported localdatetiem object with JAX-RS
+     * @param dateParam
+     * @param status
+     * @return
+     */
     @GET
     @Path("seats/{date}")
     public Response getAllSeatsForDate(@PathParam("date") LocalDateTimeParam dateParam, @QueryParam("status") BookingStatus status){
@@ -507,6 +526,12 @@ public class ConcertResource {
         return Response.noContent().build();
     }
 
+    /**
+     * get performer with their id
+     * send it back in the response using performer dto
+     * @param id
+     * @return
+     */
     @GET
     @Path("performers/{id}")
     public Response getPerformer(@PathParam("id") long id){
@@ -526,8 +551,12 @@ public class ConcertResource {
         }
     }
 
+    /**
+     * all performer are returned using performer DTOS
+     * @return
+     */
     @GET
-    @Path("performers/")
+    @Path("performers")
     public Response getPerformers(){
         EntityManager em = PersistenceManager.instance().createEntityManager();
         try {
@@ -546,7 +575,9 @@ public class ConcertResource {
         }
     }
 
-
+    /*
+    Helper method calculating the percentage of seats who remain unbooked
+     */
     private long calculateForRemainingSeatsPercentage(long concertID,LocalDateTime date){
         EntityManager em = PersistenceManager.instance().createEntityManager();
         long remainingSeats = -1;
